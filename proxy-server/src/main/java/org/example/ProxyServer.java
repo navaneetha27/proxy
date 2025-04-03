@@ -1,68 +1,59 @@
 package org.example;
 
-import com.sun.net.httpserver.*;
 import java.io.*;
 import java.net.*;
-import java.net.http.*;
-import java.util.concurrent.*;
 
 public class ProxyServer {
-    private static final int PORT = 9090;
-    private static final ExecutorService executor = Executors.newSingleThreadExecutor();
-
     public static void main(String[] args) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
-        server.createContext("/", new ProxyHandler());
-        server.setExecutor(executor);
-        server.start();
-        System.out.println("Proxy Server started on port " + PORT);
+        ServerSocket serverSocket = new ServerSocket(8080); // Listen on port 8080
+        System.out.println("Proxy server started on port 8080");
+
+        while (true) {
+            Socket clientSocket = serverSocket.accept();
+            new Thread(() -> handleClient(clientSocket)).start();
+        }
     }
 
-    static class ProxyHandler implements HttpHandler {
-        private final HttpClient client = HttpClient.newHttpClient();
-        private final BlockingQueue<HttpExchange> requestQueue = new LinkedBlockingQueue<>();
+    private static void handleClient(Socket clientSocket) {
+        try (
+                BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+                PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)
+        ) {
+            String requestLine = in.readLine();
+            if (requestLine == null) return;
 
-        public ProxyHandler() {
-            new Thread(this::processRequests).start();
-        }
+            String[] requestParts = requestLine.split(" ");
+            String method = requestParts[0];
+            String url = requestParts[1];
 
-        @Override
-        public void handle(HttpExchange exchange) {
+            if (method.equals("GET")) {
+                try {
+                    URL targetUrl = new URL(url);
+                    HttpURLConnection connection = (HttpURLConnection) targetUrl.openConnection();
+                    connection.setRequestMethod("GET");
+
+                    BufferedReader targetIn = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                    String line;
+                    while ((line = targetIn.readLine()) != null) {
+                        out.println(line);
+                    }
+                    targetIn.close();
+                } catch (IOException e) {
+                    out.println("HTTP/1.0 500 Internal Server Error");
+                    out.println();
+                }
+            } else {
+                out.println("HTTP/1.0 501 Not Implemented");
+                out.println();
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
             try {
-                requestQueue.put(exchange);
-            } catch (InterruptedException e) {
+                clientSocket.close();
+            } catch (IOException e) {
                 e.printStackTrace();
             }
-        }
-
-        private void processRequests() {
-            while (true) {
-                try {
-                    HttpExchange exchange = requestQueue.take();
-                    handleRequest(exchange);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
-        }
-
-        private void handleRequest(HttpExchange exchange) throws IOException {
-            String targetUrl = exchange.getRequestURI().toString();
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(targetUrl))
-                    .build();
-
-            client.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                    .thenAccept(response -> {
-                        try {
-                            exchange.sendResponseHeaders(response.statusCode(), response.body().length);
-                            OutputStream os = exchange.getResponseBody();
-                            os.write(response.body());
-                            os.close();
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
-                    });
         }
     }
 }
